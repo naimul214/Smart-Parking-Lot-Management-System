@@ -43,30 +43,44 @@ This system solves these issues by:
 
 ## Architecture & Data Flow
 
-```text
- +------------------------------------------------------------------------+
- |                       EDGE LAYER (OAK-D & Pi)                          |
- |                                                                        |
- |  [ Live Camera ] ---> [ VPU Acceleration ] ---> [ Spot Check Logic ]    |
- |      (Video)         (YOLOv8 Inference (.blob))   (Inside/Outside ROI) |
- +------------------------------------------------------------------------+
-                                 |
-                          (HTTPS POST Request)
-                                 v
- +------------------------------------------------------------------------+
- |                       CLOUD BACKEND (AWS)                              |
- |                                                                        |
- |  [ API Gateway ] ---> [ Lambda (POST) ] ---> [ DynamoDB (ParkingData) ]|
- +------------------------------------------------------------------------+
-                                                       |
-                                               (Queries Status)
-                                                       v
- +------------------------------------------------------------------------+
- |                       APPLICATION LAYER                                |
- |                                                                        |
- |  [ Web Dashboard ] <--- [ Lambda (GET) ] <--- [ API Gateway (GET) ]    |
- | (Occupancy Status)                                                     |
- +------------------------------------------------------------------------+
+```mermaid
+graph TD
+    %% Styling definitions
+    classDef edgeStyle fill:#e1f5fe,stroke:#03a9f4,stroke-width:2px,color:#01579b;
+    classDef cloudStyle fill:#efebe9,stroke:#8d6e63,stroke-width:2px,color:#3e2723;
+    classDef webStyle fill:#e8f5e9,stroke:#4caf50,stroke-width:2px,color:#1b5e20;
+    classDef dbStyle fill:#fff3e0,stroke:#ff9800,stroke-width:2px,color:#e65100;
+    
+    subgraph Edge_Layer ["EDGE LAYER (OAK-D & Raspberry Pi)"]
+        A["Live Camera Feed"] --> B["OAK-D MyriadX VPU<br>(YOLOv8 Inference)"]
+        B --> C["ROI Detection Engine<br>(Overlap & Spot Intersection)"]
+        C --> D["Flask Local Server<br>(Calibration / MJPEG Feed)"]
+    end
+    
+    class A,B,C,D edgeStyle;
+
+    subgraph Cloud_Layer ["AWS CLOUD LAYER"]
+        E["AWS API Gateway<br>(POST Ingestion API)"] --> F["AWS Lambda POST Handler<br>(Data formatting)"]
+        F --> G[("AWS DynamoDB<br>(ParkingData Table)")]
+        G --> H["AWS Lambda GET Handler<br>(Fetch status)"]
+        H --> I["AWS API Gateway<br>(GET Status API)"]
+    end
+    
+    class E,F cloudStyle;
+    class G dbStyle;
+    class H,I cloudStyle;
+
+    subgraph Presentation_Layer ["USER PRESENTATION LAYER"]
+        J["Streamlit Admin Dashboard<br>(Draw ROI / Calibration)"]
+        K["Driver App / Web UI<br>(Real-time Occupancy View)"]
+    end
+    
+    class J,K webStyle;
+
+    %% Data flow links
+    C -->|HTTPS POST Batch Status| E
+    J -->|Configure spots / rate| D
+    K -->|HTTPS GET Request| I
 ```
 
 ---
