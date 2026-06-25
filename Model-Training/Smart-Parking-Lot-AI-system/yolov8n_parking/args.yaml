@@ -1,7 +1,7 @@
 task: detect
 mode: train
 model: yolov8n.pt
-data: d:\Smart-Parking-Lot-AI-system\Dataset\data.yaml
+data: ../../Dataset/data.yaml
 epochs: 100
 patience: 50
 batch: 16
@@ -95,4 +95,4 @@ mixup: 0.0
 copy_paste: 0.0
 cfg: null
 tracker: botsort.yaml
-save_dir: d:\Smart-Parking-Lot-AI-system\Model-Training
+save_dir: ../../Model-Training

@@ -2,84 +2,31 @@ import cv2
 import depthai as dai
 import numpy as np
 import json
-import boto3
 import time
 import threading
 from flask import Flask, Response, request, jsonify
 import os
+from utils import decode_yolov8, get_aws_table, update_aws_table
 
 # --- CONFIGURATION ---
-MODEL_PATH = "models/parking_model.blob"
-CONFIG_FILE = "parking_config.json"
+import os
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "models", "parking_model.blob")
+CONFIG_FILE = os.path.join(BASE_DIR, "parking_config.json")
 DYNAMO_TABLE_NAME = "ParkingData"
 AWS_REGION = "us-east-1"
 CONFIDENCE_THRESHOLD = 0.5
 IOU_THRESHOLD = 0.45  # Overlap threshold for filtering
 
 # --- AWS SETUP ---
-try:
-    dynamodb = boto3.resource('dynamodb', region_name=AWS_REGION)
-    table = dynamodb.Table(DYNAMO_TABLE_NAME)
-    print("Connected to AWS DynamoDB")
-except Exception as e:
-    print(f"AWS Connection Failed: {e}")
+table = get_aws_table(AWS_REGION, DYNAMO_TABLE_NAME)
 
 # --- FLASK SETUP ---
 app = Flask(__name__)
 frame_for_web = None
 lock = threading.Lock()
 
-# --- HELPER: YOLOv8 DECODING ---
-def decode_yolov8(output_layer, conf_thresh, iou_thresh):
-    # YOLOv8 output is usually shape (1, 4+Classes, 8400) -> e.g. (1, 6, 8400)
-    # We flatten it to 1D then reshape
-    data = np.array(output_layer).reshape(6, 8400) # 6 = x,y,w,h + 2 classes
-    
-    # Transpose to (8400, 6) so each row is a box
-    data = data.transpose()
-    
-    # Extract Class 1 (Occupied) Scores. (Index 5 because: 0=x, 1=y, 2=w, 3=h, 4=empty, 5=occupied)
-    # If your classes are flipped, change to data[:, 4]
-    scores = data[:, 5] 
-    
-    # Filter out weak detections
-    mask = scores > conf_thresh
-    if not np.any(mask):
-        return []
-        
-    filtered_data = data[mask]
-    filtered_scores = scores[mask]
-    
-    # Prepare boxes for NMS (Center X, Center Y, W, H) -> (Top, Left, W, H)
-    boxes = filtered_data[:, :4]
-    
-    # YOLOv8 outputs pixels (0-640). We need OpenCV format (x, y, w, h)
-    # Convert cx,cy,w,h to x,y,w,h (Top-Left)
-    boxes[:, 0] = boxes[:, 0] - (boxes[:, 2] / 2) # x = cx - w/2
-    boxes[:, 1] = boxes[:, 1] - (boxes[:, 3] / 2) # y = cy - h/2
-    
-    # Apply Non-Maximum Suppression (Remove duplicates)
-    indices = cv2.dnn.NMSBoxes(
-        bboxes=boxes.tolist(), 
-        scores=filtered_scores.tolist(), 
-        score_threshold=conf_thresh, 
-        nms_threshold=iou_thresh
-    )
-    
-    final_detections = []
-    if len(indices) > 0:
-        indices = indices.flatten()
-        for i in indices:
-            # Normalize to 0-1 range for our existing logic
-            b = boxes[i]
-            x_norm = b[0] / 640.0
-            y_norm = b[1] / 640.0
-            w_norm = b[2] / 640.0
-            h_norm = b[3] / 640.0
-            
-            final_detections.append([x_norm, y_norm, w_norm, h_norm])
-            
-    return final_detections
+# (decode_yolov8 helper function is imported from utils.py)
 
 # --- OAK-D PIPELINE ---
 def create_pipeline():
@@ -201,19 +148,7 @@ def run_oak_d_thread():
             time.sleep(0.01)
 
 def update_aws(data):
-    try:
-        with table.batch_writer() as batch:
-            for item in data:
-                # Need to convert float to Decimal for DynamoDB
-                # But boto3 handles float -> Decimal automatically often, 
-                # if not we might need a helper. For now let's try raw.
-                # If error, we cast to Decimal.
-                item['Rate'] =  str(item['Rate']) # Safety: Dynamo sometimes hates floats
-                item['Distance'] = int(item['Distance']) # Simplify to Int for safety
-                batch.put_item(Item=item)
-        print("AWS Updated")
-    except Exception as e:
-        print(f"AWS Update Failed: {e}")
+    update_aws_table(table, data)
 
 # --- FLASK ROUTES ---
 @app.route('/')

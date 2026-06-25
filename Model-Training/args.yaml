@@ -1,7 +1,7 @@
 task: detect
 mode: train
 model: yolov8n.pt
-data: d:\Smart-Parking-Lot-AI-system\Dataset\data.yaml
+data: ../Dataset/data.yaml
 epochs: 100
 patience: 50
 batch: 16

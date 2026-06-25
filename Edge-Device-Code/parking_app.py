@@ -3,57 +3,25 @@ import cv2
 import depthai as dai
 import numpy as np
 import json
-import boto3
 import time
 import threading
 import os
 from streamlit_drawable_canvas import st_canvas
 from PIL import Image
 from decimal import Decimal
+from utils import decode_yolov8, get_aws_table, update_aws_table
 
 # --- CONFIGURATION ---
-MODEL_PATH = "models/parking_model.blob"
-CONFIG_FILE = "parking_config.json"
+import os
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "models", "parking_model.blob")
+CONFIG_FILE = os.path.join(BASE_DIR, "parking_config.json")
 DYNAMO_TABLE_NAME = "ParkingData"
 AWS_REGION = "us-east-1"
 CONFIDENCE_THRESHOLD = 0.3  # Lowered for screen demo (glare/reflection)
 IOU_THRESHOLD = 0.5
 
-# --- HELPER: YOLOv8 DECODER ---
-def decode_yolov8(output_layer):
-    data = np.array(output_layer).reshape(6, 8400).transpose()
-    
-    # Filter by Class 1 (Occupied Space)
-    # Adjust index '5' if your 'occupied' class ID is different
-    scores = data[:, 5] 
-    mask = scores > CONFIDENCE_THRESHOLD
-    if not np.any(mask): return []
-    
-    filtered_data = data[mask]
-    filtered_scores = scores[mask]
-    boxes = filtered_data[:, :4]
-    
-    # Convert Center-X/Y to Top-Left X/Y
-    boxes[:, 0] = boxes[:, 0] - (boxes[:, 2] / 2)
-    boxes[:, 1] = boxes[:, 1] - (boxes[:, 3] / 2)
-    
-    # NMS (Non-Maximum Suppression)
-    indices = cv2.dnn.NMSBoxes(
-        bboxes=boxes.tolist(), 
-        scores=filtered_scores.tolist(), 
-        score_threshold=CONFIDENCE_THRESHOLD, 
-        nms_threshold=IOU_THRESHOLD
-    )
-    
-    final_detections = []
-    if len(indices) > 0:
-        indices = indices.flatten()
-        for i in indices:
-            b = boxes[i]
-            # Normalize to 0-1 range
-            final_detections.append([b[0]/640.0, b[1]/640.0, b[2]/640.0, b[3]/640.0])
-            
-    return final_detections
+# (decode_yolov8 helper function is imported from utils.py)
 
 # --- SYSTEM CLASS ---
 @st.cache_resource
@@ -68,12 +36,11 @@ class ParkingSystem:
         self.aws_status = "Waiting..."
         
         # Connect AWS
-        try:
-            self.dynamodb = boto3.resource('dynamodb', region_name=AWS_REGION)
-            self.table = self.dynamodb.Table(DYNAMO_TABLE_NAME)
-            print("AWS Connected")
-        except:
-            print("AWS Connection Failed")
+        self.table = get_aws_table(AWS_REGION, DYNAMO_TABLE_NAME)
+        if self.table is not None:
+            self.aws_status = "AWS Connected"
+        else:
+            self.aws_status = "AWS Connection Offline"
 
         # Start Camera Thread
         self.thread = threading.Thread(target=self.run_oak_d)
@@ -130,7 +97,7 @@ class ParkingSystem:
                 
                 # 2. Get Detections
                 layer = inDet.getFirstLayerFp16()
-                self.detections = decode_yolov8(layer)
+                self.detections = decode_yolov8(layer, CONFIDENCE_THRESHOLD, IOU_THRESHOLD)
                 
                 # 3. Check Spots Intersection
                 status_batch = []
@@ -173,13 +140,11 @@ class ParkingSystem:
                 time.sleep(0.01)
 
     def update_aws(self, data):
-        try:
-            with self.table.batch_writer() as batch:
-                for item in data:
-                    batch.put_item(Item=item)
+        success = update_aws_table(self.table, data)
+        if success:
             self.aws_status = f"Last Update: {time.strftime('%H:%M:%S')}"
-        except Exception as e:
-            self.aws_status = f"AWS Error: {str(e)[:20]}"
+        else:
+            self.aws_status = "AWS sync failed"
 
     def get_frame(self):
         with self.lock:
